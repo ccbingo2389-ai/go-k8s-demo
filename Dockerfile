@@ -5,7 +5,7 @@ COPY . .
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o server main.go
 
 # 运行阶段
-FROM http://registry.cn-shanghai.aliyuncs.com/zhanghaoyu001/alpine:latest
+FROM crpi-qog7f6f2a152sq41-vpc.cn-shanghai.personal.cr.aliyuncs.com/test20260603/alpine:latest
 WORKDIR /root/
 COPY --from=builder /app/server .
 EXPOSE 8080
