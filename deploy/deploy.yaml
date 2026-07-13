@@ -15,9 +15,11 @@ spec:
       containers:
         - name: go-app
           # 此处的 ${IMAGE} 会被云效流水线自动替换为实际构建的镜像地址
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208 
+          image: crpi-qog7f6f2a152sq41-vpc.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208 
           ports:
             - containerPort: 8080
+      imagePullSecrets:
+        - name: imagesecret
       
 ---
 apiVersion: v1
