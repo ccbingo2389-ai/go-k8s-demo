@@ -1,9 +1,53 @@
-apiVersion: apps/v1
-kind: Deployment
+ # ========================
+# 1. Active Service (生产流量入口，保持不变)
+# ========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-k8s-demo-svc        # 生产服务名不变
+spec:
+  selector:
+    app: go-k8s-demo           # ⚠️ 注意：这里不要写死版本标签
+                               # Argo Rollouts 会自动通过 rollout-pod-template-hash 管理流量切换
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# ========================
+# 2. Preview Service (新版本验证用，新增)
+# ========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-k8s-demo-preview    # 预览服务名
+spec:
+  selector:
+    app: go-k8s-demo           # 与 Active Service 相同的 selector
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# ========================
+# 3. Rollout (替代原 Deployment)
+# ========================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: go-k8s-demo
 spec:
   replicas: 2
+  strategy:
+    blueGreen:
+      activeService: go-k8s-demo-svc       # 接收生产流量的 Service
+      previewService: go-k8s-demo-preview  # 新版本上线前验证用的 Service
+      autoPromotionEnabled: false          # ⭐ 建议关闭自动晋升，手动确认后再切流
+      # autoPromotionSeconds: 30           # 如果开启自动晋升，等待秒数
   selector:
     matchLabels:
       app: go-k8s-demo
@@ -14,22 +58,6 @@ spec:
     spec:
       containers:
         - name: go-app
-          # 此处的 ${IMAGE} 会被云效流水线自动替换为实际构建的镜像地址
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208 
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
-      
-      
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: go-k8s-demo-svc
-spec:
-  selector:
-    app: go-k8s-demo
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 8080
-  type: ClusterIP
