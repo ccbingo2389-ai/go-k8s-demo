@@ -1,12 +1,22 @@
 # ============================================================
-# Argo Rollouts - Canary 灰度发布
-# 包含：Rollout + Stable Service + Canary Service
+# 1. 命名空间（含 Istio Sidecar 自动注入标签）
 # ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: go-k8s-demo
+  labels:
+    istio-injection: enabled   # ← 启用 Sidecar 自动注入
 
+---
+# ============================================================
+# 2. Argo Rollouts - Canary 灰度发布（集成 Istio）
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: go-k8s-demo
+  namespace: go-k8s-demo       # ← 指定新命名空间
   labels:
     app: go-k8s-demo
 spec:
@@ -19,10 +29,11 @@ spec:
     metadata:
       labels:
         app: go-k8s-demo
+      annotations:
+        sidecar.istio.io/inject: "true"   # ← Pod 级注入保险
     spec:
       containers:
         - name: go-app
-          # 云效流水线会将 ${IMAGE} 替换为实际构建的镜像地址
           image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
@@ -40,8 +51,15 @@ spec:
             periodSeconds: 15
   strategy:
     canary:
-      canaryService: go-k8s-demo-canary-svc
       stableService: go-k8s-demo-svc
+      canaryService: go-k8s-demo-canary-svc
+      # ✅ Istio 流量路由配置（必须与 VirtualService 联动）
+      trafficRouting:
+        istio:
+          virtualServices:
+            - name: go-k8s-demo-vsvc
+              routes:
+                - primary
       steps:
         - setWeight: 10
         - pause: { duration: 2m }
@@ -52,11 +70,41 @@ spec:
         - setWeight: 100
 
 ---
-# Stable Service（承接稳定版流量）
+# ============================================================
+# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
+# ============================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: go-k8s-demo-vsvc
+  namespace: go-k8s-demo
+spec:
+  hosts:
+    - go-k8s-demo-svc
+    - go-k8s-demo-canary-svc
+  http:
+    - name: primary             # ← 必须与 Rollout routes 名称一致
+      route:
+        - destination:
+            host: go-k8s-demo-svc
+            port:
+              number: 80
+          weight: 100           # 初始值，Argo Rollouts 会自动覆盖
+        - destination:
+            host: go-k8s-demo-canary-svc
+            port:
+              number: 80
+          weight: 0
+
+---
+# ============================================================
+# 4. Stable Service
+# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: go-k8s-demo-svc
+  namespace: go-k8s-demo
   labels:
     app: go-k8s-demo
 spec:
@@ -69,11 +117,14 @@ spec:
   type: ClusterIP
 
 ---
-# Canary Service（承接灰度版流量）
+# ============================================================
+# 5. Canary Service
+# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: go-k8s-demo-canary-svc
+  namespace: go-k8s-demo
   labels:
     app: go-k8s-demo
 spec:
