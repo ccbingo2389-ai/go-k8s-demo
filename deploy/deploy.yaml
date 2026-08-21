@@ -23,7 +23,7 @@ spec:
       containers:
         - name: go-app
           # 云效流水线会将 ${IMAGE} 替换为实际构建的镜像地址
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061204
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
           readinessProbe:
