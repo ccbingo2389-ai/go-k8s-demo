@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061206
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -69,7 +69,7 @@ spec:
 
 ---
 # ============================================================
-# 3. Istio VirtualService（已绑定 Gateway + 域名）
+# 3. Istio VirtualService（绑定 Gateway + HTTPS 域名）
 # ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -77,13 +77,13 @@ metadata:
   name: go-k8s-demo-vsvc
   namespace: go-k8s-demo
 spec:
-  gateways:                                # ← 新增：绑定 Gateway
-    - istio-system/go-k8s-demo-gateway     #   跨命名空间引用格式
-    - mesh                                 #   保留集群内部调用
+  gateways:
+    - istio-system/go-k8s-demo-gateway
+    - mesh
   hosts:
-    - "demo.howaimath.cn"               # ← 改为实际域名（原来是 svc 名）
+    - "demo.howaimath.cn"
   http:
-    - name: primary                        # ← Argo Rollouts 依赖此名称
+    - name: primary
       route:
         - destination:
             host: go-k8s-demo-svc
@@ -140,20 +140,33 @@ spec:
 
 ---
 # ============================================================
-# 6. Istio Gateway（新增 ✅）
+# 6. Istio Gateway（HTTP → HTTPS 自动跳转 + TLS 终止）✅ 已升级
 # ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
   name: go-k8s-demo-gateway
-  namespace: istio-system                  # ← Gateway 放在 istio-system
+  namespace: istio-system
 spec:
   selector:
-    istio: ingressgateway                  # ← 匹配你的 gateway pod label
+    istio: ingressgateway
   servers:
+    # HTTP 监听 → 自动 301 跳转到 HTTPS
     - port:
         number: 80
         name: http
         protocol: HTTP
       hosts:
-        - "demo.howaimath.cn"           # ← 与 VirtualService 中的域名一致
+        - "demo.howaimath.cn"
+      tls:
+        httpsRedirect: true
+    # HTTPS 监听 → TLS 终止在 Istio Gateway
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "demo.howaimath.cn"
+      tls:
+        mode: SIMPLE
+        credentialName: demo-howaimath-cn-tls   # ← 引用 istio-system 下的 Secret
