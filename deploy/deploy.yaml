@@ -29,7 +29,7 @@ spec:
     metadata:
       labels:
         app: go-k8s-demo
-        sidecar.istio.io/inject: "true"   # ← Pod 级 label（替代已弃用的 annotation）
+        sidecar.istio.io/inject: "true"
     spec:
       containers:
         - name: go-app
@@ -69,7 +69,7 @@ spec:
 
 ---
 # ============================================================
-# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
+# 3. Istio VirtualService（已绑定 Gateway + 域名）
 # ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -77,11 +77,13 @@ metadata:
   name: go-k8s-demo-vsvc
   namespace: go-k8s-demo
 spec:
+  gateways:                                # ← 新增：绑定 Gateway
+    - istio-system/go-k8s-demo-gateway     #   跨命名空间引用格式
+    - mesh                                 #   保留集群内部调用
   hosts:
-    - go-k8s-demo-svc
-    - go-k8s-demo-canary-svc
+    - "demo.howaimath.cn"               # ← 改为实际域名（原来是 svc 名）
   http:
-    - name: primary
+    - name: primary                        # ← Argo Rollouts 依赖此名称
       route:
         - destination:
             host: go-k8s-demo-svc
@@ -96,7 +98,7 @@ spec:
 
 ---
 # ============================================================
-# 4. Stable Service（端口已命名）
+# 4. Stable Service
 # ============================================================
 apiVersion: v1
 kind: Service
@@ -109,7 +111,7 @@ spec:
   selector:
     app: go-k8s-demo
   ports:
-    - name: http              # ← 符合 Istio 端口命名规范
+    - name: http
       protocol: TCP
       port: 80
       targetPort: 8080
@@ -117,7 +119,7 @@ spec:
 
 ---
 # ============================================================
-# 5. Canary Service（端口已命名）
+# 5. Canary Service
 # ============================================================
 apiVersion: v1
 kind: Service
@@ -130,8 +132,28 @@ spec:
   selector:
     app: go-k8s-demo
   ports:
-    - name: http              # ← 符合 Istio 端口命名规范
+    - name: http
       protocol: TCP
       port: 80
       targetPort: 8080
   type: ClusterIP
+
+---
+# ============================================================
+# 6. Istio Gateway（新增 ✅）
+# ============================================================
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: go-k8s-demo-gateway
+  namespace: istio-system                  # ← Gateway 放在 istio-system
+spec:
+  selector:
+    istio: ingressgateway                  # ← 匹配你的 gateway pod label
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "demo.howaimath.cn"           # ← 与 VirtualService 中的域名一致
