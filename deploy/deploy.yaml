@@ -159,7 +159,7 @@ metadata:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/alb-id: alb-2x9kyhzdtk78bfud3b
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-redirect: "true"
     # ⚠️ 替换为你的SSL证书ID
     alb.ingress.kubernetes.io/cert-ids: "cas_dv-cn-iu64xs0mv00x"
     alb.ingress.kubernetes.io/healthcheck-enabled: "true"
