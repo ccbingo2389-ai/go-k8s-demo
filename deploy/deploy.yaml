@@ -1,5 +1,5 @@
 # ============================================================
-# 1. 命名空间（含 Istio Sidecar 自动注入标签）
+# 1. Namespace（不变）
 # ============================================================
 apiVersion: v1
 kind: Namespace
@@ -9,9 +9,7 @@ metadata:
     istio-injection: enabled
 
 ---
-# ============================================================
-# 2. Argo Rollouts - Canary 灰度发布（集成 Istio）
-# ============================================================
+# 2. Argo Rollout（不变）
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -68,9 +66,7 @@ spec:
         - setWeight: 100
 
 ---
-# ============================================================
-# 3. Istio VirtualService（绑定 Gateway + HTTPS 域名）
-# ============================================================
+# 3. VirtualService（不变）
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -97,9 +93,7 @@ spec:
           weight: 0
 
 ---
-# ============================================================
-# 4. Stable Service
-# ============================================================
+# 4. Stable Service（不变）
 apiVersion: v1
 kind: Service
 metadata:
@@ -118,9 +112,7 @@ spec:
   type: ClusterIP
 
 ---
-# ============================================================
-# 5. Canary Service
-# ============================================================
+# 5. Canary Service（不变）
 apiVersion: v1
 kind: Service
 metadata:
@@ -139,9 +131,7 @@ spec:
   type: ClusterIP
 
 ---
-# ============================================================
-# 6. Istio Gateway（HTTP → HTTPS 自动跳转 + TLS 终止）✅ 已升级
-# ============================================================
+# 6. Istio Gateway（已修改：去掉TLS，只保留HTTP）
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
@@ -151,22 +141,39 @@ spec:
   selector:
     istio: ingressgateway
   servers:
-    # HTTP 监听 → 自动 301 跳转到 HTTPS
     - port:
         number: 80
         name: http
         protocol: HTTP
       hosts:
         - "demo.howaimath.cn"
-      tls:
-        httpsRedirect: true
-    # HTTPS 监听 → TLS 终止在 Istio Gateway
-    - port:
-        number: 443
-        name: https
-        protocol: HTTPS
-      hosts:
-        - "demo.howaimath.cn"
-      tls:
-        mode: SIMPLE
-        credentialName: demo-howaimath-cn-tls   # ← 引用 istio-system 下的 Secret
+
+---
+# 7. Ingress（新增：指向现有ALB，接入WAF）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: go-k8s-demo-ingress
+  namespace: istio-system
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/alb-id: alb-2x9kyhzdtk78bfud3b
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # ⚠️ 替换为你的SSL证书ID
+    alb.ingress.kubernetes.io/cert-ids: "cas_dv-cn-iu64xs0mv00x"
+    alb.ingress.kubernetes.io/healthcheck-enabled: "true"
+    alb.ingress.kubernetes.io/healthcheck-path: "/healthz/ready"
+    alb.ingress.kubernetes.io/healthcheck-port: "15021"
+spec:
+  rules:
+    - host: "demo.howaimath.cn"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: istio-ingressgateway
+                port:
+                  number: 80
