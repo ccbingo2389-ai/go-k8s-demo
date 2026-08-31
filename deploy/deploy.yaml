@@ -1,10 +1,17 @@
+# ============================================================
+# 1. 命名空间（含 Istio Sidecar 自动注入标签）
+# ============================================================
 apiVersion: v1
 kind: Namespace
 metadata:
   name: go-k8s-demo
   labels:
-    istio.io/dataplane-mode: ambient   # ← 改为 Ambient 标签
+    istio-injection: enabled
+
 ---
+# ============================================================
+# 2. Argo Rollouts - Canary 灰度发布（集成 Istio）
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -22,11 +29,11 @@ spec:
     metadata:
       labels:
         app: go-k8s-demo
-        # ← 已移除 sidecar.istio.io/inject: "true"
+        sidecar.istio.io/inject: "true"   # ← Pod 级 label（替代已弃用的 annotation）
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061206
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -59,7 +66,11 @@ spec:
         - setWeight: 60
         - pause: { duration: 2m }
         - setWeight: 100
+
 ---
+# ============================================================
+# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
+# ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -82,7 +93,11 @@ spec:
             port:
               number: 80
           weight: 0
+
 ---
+# ============================================================
+# 4. Stable Service（端口已命名）
+# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
@@ -94,12 +109,16 @@ spec:
   selector:
     app: go-k8s-demo
   ports:
-    - name: http
+    - name: http              # ← 符合 Istio 端口命名规范
       protocol: TCP
       port: 80
       targetPort: 8080
   type: ClusterIP
+
 ---
+# ============================================================
+# 5. Canary Service（端口已命名）
+# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
@@ -111,7 +130,7 @@ spec:
   selector:
     app: go-k8s-demo
   ports:
-    - name: http
+    - name: http              # ← 符合 Istio 端口命名规范
       protocol: TCP
       port: 80
       targetPort: 8080
