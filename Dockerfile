@@ -1,5 +1,5 @@
 # ========== Build Stage ==========
-FROM crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:1.21-alpine AS builder
+FROM crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:1.26-alpine AS builder
 
 WORKDIR /app
 
