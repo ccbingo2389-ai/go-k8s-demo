@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -16,8 +19,7 @@ import (
 
 func initTracer() func(context.Context) error {
 	ctx := context.Background()
-	
-	// 从环境变量读取 endpoint，默认指向本地或集群内 collector
+
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
 		endpoint = "http://localhost:4318"
@@ -27,7 +29,9 @@ func initTracer() func(context.Context) error {
 		serviceName = "go-k8s-demo"
 	}
 
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint+"/v1/traces"))
+	exporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(endpoint+"/v1/traces"),
+	)
 	if err != nil {
 		log.Fatalf("failed to create exporter: %v", err)
 	}
@@ -52,7 +56,6 @@ func initTracer() func(context.Context) error {
 
 func main() {
 	shutdown := initTracer()
-	defer shutdown(context.Background())
 
 	tracer := otel.Tracer("go-k8s-demo-server")
 
@@ -61,17 +64,37 @@ func main() {
 		defer span.End()
 
 		w.Write([]byte("Hello from go-k8s-demo! Tracing is active.\n"))
-		
-		// 模拟一些工作
+
 		_, childSpan := tracer.Start(ctx, "simulate-work")
 		defer childSpan.End()
 	})
 
-	// 使用 otelhttp 包装 handler 以自动捕获 HTTP 入站请求
 	handler := otelhttp.NewHandler(http.DefaultServeMux, "server")
-	
+
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: handler,
+	}
+
+	// ✅ 优雅关闭：确保 buffered spans 被 flush
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Println("Shutting down...")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// 先停 HTTP，再 flush traces
+		srv.Shutdown(shutdownCtx)
+		if err := shutdown(shutdownCtx); err != nil {
+			log.Printf("OTel shutdown error: %v", err)
+		}
+	}()
+
 	log.Println("Starting server on :8080...")
-	if err := http.ListenAndServe(":8080", handler); err != nil {
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
