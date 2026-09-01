@@ -1,4 +1,4 @@
-module go-k8s-demo
+ module go-k8s-demo
 
 go 1.26.1
 
