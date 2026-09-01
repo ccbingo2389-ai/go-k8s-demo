@@ -1,19 +1,10 @@
-# ============================================================
-# 1. 命名空间（含 Istio Sidecar 自动注入标签）
-# ============================================================
 apiVersion: v1
 kind: Namespace
 metadata:
   name: go-k8s-demo
-  labels:
-    istio-injection: enabled
-
 ---
-# ============================================================
-# 2. Argo Rollouts - Canary 灰度发布（集成 Istio）
-# ============================================================
-apiVersion: argoproj.io/v1alpha1
-kind: Rollout
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: go-k8s-demo
   namespace: go-k8s-demo
@@ -21,7 +12,6 @@ metadata:
     app: go-k8s-demo
 spec:
   replicas: 2
-  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: go-k8s-demo
@@ -29,109 +19,38 @@ spec:
     metadata:
       labels:
         app: go-k8s-demo
-        sidecar.istio.io/inject: "true"   # ← Pod 级 label（替代已弃用的 annotation）
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
+          # 此处的镜像地址请根据实际情况替换，云效流水线会自动处理 ${IMAGE}
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061209
+          env:
+            # 指向集群内的 SigNoz OTel Collector
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
+            # 在 SigNoz UI 中显示的服务名称
+            - name: OTEL_SERVICE_NAME
+              value: "go-k8s-demo"
           ports:
             - containerPort: 8080
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 15
-  strategy:
-    canary:
-      stableService: go-k8s-demo-svc
-      canaryService: go-k8s-demo-canary-svc
-      trafficRouting:
-        istio:
-          virtualServices:
-            - name: go-k8s-demo-vsvc
-              routes:
-                - primary
-      steps:
-        - setWeight: 10
-        - pause: { duration: 2m }
-        - setWeight: 30
-        - pause: { duration: 2m }
-        - setWeight: 60
-        - pause: { duration: 2m }
-        - setWeight: 100
-
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
 ---
-# ============================================================
-# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
-# ============================================================
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
-metadata:
-  name: go-k8s-demo-vsvc
-  namespace: go-k8s-demo
-spec:
-  hosts:
-    - go-k8s-demo-svc
-    - go-k8s-demo-canary-svc
-  http:
-    - name: primary
-      route:
-        - destination:
-            host: go-k8s-demo-svc
-            port:
-              number: 80
-          weight: 100
-        - destination:
-            host: go-k8s-demo-canary-svc
-            port:
-              number: 80
-          weight: 0
-
----
-# ============================================================
-# 4. Stable Service（端口已命名）
-# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: go-k8s-demo-svc
   namespace: go-k8s-demo
-  labels:
-    app: go-k8s-demo
 spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 8080
+      nodePort: 30881  # 使用 30881 避免与 hotrod 的 30880 冲突
   selector:
     app: go-k8s-demo
-  ports:
-    - name: http              # ← 符合 Istio 端口命名规范
-      protocol: TCP
-      port: 80
-      targetPort: 8080
-  type: ClusterIP
-
----
-# ============================================================
-# 5. Canary Service（端口已命名）
-# ============================================================
-apiVersion: v1
-kind: Service
-metadata:
-  name: go-k8s-demo-canary-svc
-  namespace: go-k8s-demo
-  labels:
-    app: go-k8s-demo
-spec:
-  selector:
-    app: go-k8s-demo
-  ports:
-    - name: http              # ← 符合 Istio 端口命名规范
-      protocol: TCP
-      port: 80
-      targetPort: 8080
-  type: ClusterIP
