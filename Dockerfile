@@ -3,18 +3,18 @@ FROM crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/gol
 
 WORKDIR /app
 
-# 先复制依赖（利用缓存）
+# 先复制依赖文件，利用 Docker 层缓存
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 再复制源码
+# 再复制源码并构建
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o server main.go
 
 # ========== Runtime Stage ==========
 FROM crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/alpine:latest
 
-# ⚠️ 必须有 CA 证书，否则 OTLP exporter TLS 失败
+# ⚠️ 关键：安装 CA 证书 + 时区数据
 RUN apk --no-cache add ca-certificates tzdata
 ENV TZ=Asia/Shanghai
 
