@@ -129,11 +129,11 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	)
 	defer rootSpan.End()
 
-	// 日志①
+	// 日志① —— v0.22.0 用 attribute.Value / attribute.KeyValue
 	emitLog(ctx, apilog.SeverityInfo, "received request",
-		kv("http.method", r.Method),
-		kv("http.target", r.URL.Path),
-		kv("client.ip", r.RemoteAddr),
+		attribute.String("http.method", r.Method),
+		attribute.String("http.target", r.URL.Path),
+		attribute.String("client.ip", r.RemoteAddr),
 	)
 
 	// 子 span
@@ -144,26 +144,19 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// 日志②
 	emitLog(ctx, apilog.SeverityInfo, "request handled successfully",
-		kv("result", "ok"),
+		attribute.String("result", "ok"),
 	)
 
 	rootSpan.SetAttributes(attribute.Int("http.response.status_code", http.StatusOK))
 	fmt.Fprintln(w, "Hello from go-k8s-demo! Tracing + Logging active.")
 }
 
-// ===== v0.22.0 适配：手动构造 KeyValue =====
-// v0.22.0 移除了 apilog.String() / apilog.StringValue()，
-// 改为直接构造 apilog.KeyValue 结构体。
-
-func kv(key string, val string) apilog.KeyValue {
-	var v apilog.Value
-	v.SetString(val)
-	return apilog.KeyValue{Key: key, Value: v}
-}
-
-func emitLog(ctx context.Context, sev apilog.Severity, body string, attrs ...apilog.KeyValue) {
+// emitLog 适配 v0.22.0：
+//   - SetBody 接受 attribute.Value
+//   - AddAttributes 接受 ...attribute.KeyValue
+func emitLog(ctx context.Context, sev apilog.Severity, body string, attrs ...attribute.KeyValue) {
 	var rec apilog.Record
-	rec.SetBody(apilog.Value{}.SetString(body))
+	rec.SetBody(attribute.StringValue(body))
 	rec.SetSeverity(sev)
 	rec.SetTimestamp(time.Now())
 	rec.AddAttributes(attrs...)
