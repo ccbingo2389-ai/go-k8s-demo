@@ -23,7 +23,7 @@ spec:
       containers:
         - name: go-app
           # 此处的镜像地址请根据实际情况替换，云效流水线会自动处理 ${IMAGE}
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061209
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026090101
           env:
             # 指向集群内的 SigNoz OTel Collector
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
