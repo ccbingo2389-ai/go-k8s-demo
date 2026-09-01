@@ -6,11 +6,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	apilog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	apilog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -18,41 +23,74 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-var logger apilog.Logger
+var (
+	tracer     trace.Tracer
+	otelLogger apilog.Logger
+)
 
 func main() {
 	ctx := context.Background()
 
-	// 统一的 resource（service.name 等）
+	// ---------- 1. Resource ----------
+	svcName := os.Getenv("OTEL_SERVICE_NAME")
+	if svcName == "" {
+		svcName = "go-k8s-demo"
+	}
 	res, err := sdkresource.New(ctx,
-		sdkresource.WithAttributes(
-			semconv.ServiceName(os.Getenv("OTEL_SERVICE_NAME")),
-		),
+		sdkresource.WithAttributes(semconv.ServiceName(svcName)),
 	)
 	if err != nil {
 		log.Fatalf("failed to create resource: %v", err)
 	}
 
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") // http://signoz-otel-collector.signoz.svc.cluster.local:4318
+	// ---------- 2. OTLP endpoint ----------
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
+	}
 
-	// ===== Trace（你已有的部分）=====
+	// ---------- 3. Traces ----------
 	tp, err := initTracer(ctx, endpoint, res)
 	if err != nil {
 		log.Fatalf("failed to init tracer: %v", err)
 	}
-	defer func() { _ = tp.Shutdown(ctx) }()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{},
+	))
+	tracer = tp.Tracer("go-k8s-demo")
 
-	// ===== Logs（新增）=====
+	// ---------- 4. Logs ----------
 	lp, err := initLogger(ctx, endpoint, res)
 	if err != nil {
 		log.Fatalf("failed to init logger: %v", err)
 	}
-	defer func() { _ = lp.Shutdown(ctx) }()
-	logger = lp.Logger("go-k8s-demo")
+	otelLogger = lp.Logger("go-k8s-demo")
 
-	http.HandleFunc("/", handleRequest)
-	log.Println("Starting server on :8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// ---------- 5. HTTP 服务 ----------
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleRequest)
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+
+	go func() {
+		log.Println("Starting server on :8080 ...")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	// ---------- 6. 优雅退出 ----------
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down ...")
+
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutCtx)
+	_ = lp.Shutdown(shutCtx)
+	_ = tp.Shutdown(shutCtx)
+	log.Println("Bye.")
 }
 
 func initTracer(ctx context.Context, endpoint string, res *sdkresource.Resource) (*sdktrace.TracerProvider, error) {
@@ -79,23 +117,55 @@ func initLogger(ctx context.Context, endpoint string, res *sdkresource.Resource)
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	spanCtx := trace.SpanContextFromContext(ctx)
 
-	// ===== 发一条结构化日志，trace_id/span_id 由 SDK 自动关联 =====
-	var rec apilog.Record
-	rec.SetBody(apilog.StringValue("handling incoming request"))
-	rec.SetSeverity(apilog.SeverityInfo)
-	rec.SetTimestamp(time.Now())
-	rec.AddAttributes(
-		apilog.String("http.method", r.Method),
-		apilog.String("http.target", r.URL.Path),
-		apilog.String("client.ip", r.RemoteAddr),
-		apilog.String("trace_id", spanCtx.TraceID().String()), // 显式带一份，方便检索
+	// 根 span
+	ctx, rootSpan := tracer.Start(ctx, "GET /",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+			attribute.String("client.address", r.RemoteAddr),
+		),
 	)
-	logger.Emit(ctx, rec)
+	defer rootSpan.End()
 
-	// 模拟业务耗时
+	// 日志①
+	emitLog(ctx, apilog.SeverityInfo, "received request",
+		kv("http.method", r.Method),
+		kv("http.target", r.URL.Path),
+		kv("client.ip", r.RemoteAddr),
+	)
+
+	// 子 span
+	ctx, childSpan := tracer.Start(ctx, "handle-request")
+	defer childSpan.End()
+
 	time.Sleep(200 * time.Millisecond)
 
+	// 日志②
+	emitLog(ctx, apilog.SeverityInfo, "request handled successfully",
+		kv("result", "ok"),
+	)
+
+	rootSpan.SetAttributes(attribute.Int("http.response.status_code", http.StatusOK))
 	fmt.Fprintln(w, "Hello from go-k8s-demo! Tracing + Logging active.")
+}
+
+// ===== v0.22.0 适配：手动构造 KeyValue =====
+// v0.22.0 移除了 apilog.String() / apilog.StringValue()，
+// 改为直接构造 apilog.KeyValue 结构体。
+
+func kv(key string, val string) apilog.KeyValue {
+	var v apilog.Value
+	v.SetString(val)
+	return apilog.KeyValue{Key: key, Value: v}
+}
+
+func emitLog(ctx context.Context, sev apilog.Severity, body string, attrs ...apilog.KeyValue) {
+	var rec apilog.Record
+	rec.SetBody(apilog.Value{}.SetString(body))
+	rec.SetSeverity(sev)
+	rec.SetTimestamp(time.Now())
+	rec.AddAttributes(attrs...)
+	otelLogger.Emit(ctx, rec)
 }
