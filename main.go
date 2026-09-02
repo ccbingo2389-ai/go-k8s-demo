@@ -6,159 +6,211 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	apilog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"       // logs
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp" // 🆕 metrics exporter
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"   // traces
+	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric" // 🆕 metrics SDK
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 var (
-	tracer     trace.Tracer
-	otelLogger apilog.Logger
+	tracer trace.Tracer
+	logger log.Logger
+	meter  = otel.Meter("go-k8s-demo") // 🆕 全局 meter（init 后会被替换）
 )
 
-func main() {
-	ctx := context.Background()
+// 🆕 业务指标变量
+var (
+	requestCounter    metric.Int64Counter
+	requestDuration   metric.Float64Histogram
+	activeRequests    metric.Int64UpDownCounter
+)
 
-	// ---------- 1. Resource ----------
+func initOTel(ctx context.Context) func() {
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "http://localhost:4318"
+	}
 	svcName := os.Getenv("OTEL_SERVICE_NAME")
 	if svcName == "" {
 		svcName = "go-k8s-demo"
 	}
-	res, err := sdkresource.New(ctx,
-		sdkresource.WithAttributes(semconv.ServiceName(svcName)),
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(svcName),
+			attribute.String("deployment.environment", "production"),
+		),
 	)
 	if err != nil {
 		log.Fatalf("failed to create resource: %v", err)
 	}
 
-	// ---------- 2. OTLP endpoint ----------
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
-	}
-
-	// ---------- 3. Traces ----------
-	tp, err := initTracer(ctx, endpoint, res)
+	// ========== Traces ==========
+	traceExporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(endpoint),
+	)
 	if err != nil {
-		log.Fatalf("failed to init tracer: %v", err)
+		log.Fatalf("failed to create trace exporter: %v", err)
 	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExporter),
+		sdktrace.WithResource(res),
+	)
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, propagation.Baggage{},
-	))
 	tracer = tp.Tracer("go-k8s-demo")
 
-	// ---------- 4. Logs ----------
-	lp, err := initLogger(ctx, endpoint, res)
+	// ========== Logs ==========
+	logExporter, err := otlploghttp.New(ctx,
+		otlploghttp.WithEndpointURL(endpoint),
+	)
 	if err != nil {
-		log.Fatalf("failed to init logger: %v", err)
+		log.Fatalf("failed to create log exporter: %v", err)
 	}
-	otelLogger = lp.Logger("go-k8s-demo")
-
-	// ---------- 5. HTTP 服务 ----------
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleRequest)
-	srv := &http.Server{Addr: ":8080", Handler: mux}
-
-	go func() {
-		log.Println("Starting server on :8080 ...")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
-		}
-	}()
-
-	// ---------- 6. 优雅退出 ----------
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("Shutting down ...")
-
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(shutCtx)
-	_ = lp.Shutdown(shutCtx)
-	_ = tp.Shutdown(shutCtx)
-	log.Println("Bye.")
-}
-
-func initTracer(ctx context.Context, endpoint string, res *sdkresource.Resource) (*sdktrace.TracerProvider, error) {
-	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint+"/v1/traces"))
-	if err != nil {
-		return nil, err
-	}
-	return sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(res),
-	), nil
-}
-
-func initLogger(ctx context.Context, endpoint string, res *sdkresource.Resource) (*sdklog.LoggerProvider, error) {
-	exp, err := otlploghttp.New(ctx, otlploghttp.WithEndpointURL(endpoint+"/v1/logs"))
-	if err != nil {
-		return nil, err
-	}
-	return sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
 		sdklog.WithResource(res),
-	), nil
+	)
+	logger = lp.Logger("go-k8s-demo")
+
+	// ========== 🆕 Metrics ==========
+	metricExporter, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithEndpointURL(endpoint),
+	)
+	if err != nil {
+		log.Fatalf("failed to create metric exporter: %v", err)
+	}
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(
+			sdkmetric.NewPeriodicReader(metricExporter,
+				sdkmetric.WithInterval(10*time.Second), // 每 10 秒上报一次
+			),
+		),
+		sdkmetric.WithResource(res),
+	)
+	otel.SetMeterProvider(mp)
+
+	// 🆕 注册业务指标
+	initMetrics()
+
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tp.Shutdown(ctx)
+		_ = lp.Shutdown(ctx)
+		_ = mp.Shutdown(ctx) // 🆕 关闭 metrics provider
+	}
+}
+
+// 🆕 初始化自定义指标
+func initMetrics() {
+	var err error
+
+	// 请求总数计数器
+	requestCounter, err = meter.Int64Counter("http_requests_total",
+		metric.WithDescription("Total number of HTTP requests"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		log.Fatalf("failed to create request counter: %v", err)
+	}
+
+	// 请求耗时直方图
+	requestDuration, err = meter.Float64Histogram("http_request_duration_seconds",
+		metric.WithDescription("HTTP request duration in seconds"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		log.Fatalf("failed to create request duration histogram: %v", err)
+	}
+
+	// 当前活跃请求数
+	activeRequests, err = meter.Int64UpDownCounter("http_active_requests",
+		metric.WithDescription("Number of active HTTP requests"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		log.Fatalf("failed to create active requests gauge: %v", err)
+	}
+}
+
+func emitLog(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+	// 双写 stdout
+	fmt.Printf("%s | %s\n", time.Now().Format("2006-01-02 15:04:05.000"), msg)
+
+	// 写入 OTel
+	r := otellog.Record{}
+	r.SetBody(otellog.StringValue(msg))
+	r.SetTimestamp(time.Now())
+	r.SetSeverity(otellog.SeverityInfo)
+	r.SetSeverityText("INFO")
+	r.AddAttributes(attrs...)
+	logger.Emit(ctx, r)
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, span := tracer.Start(r.Context(), "handle-request")
+	defer span.End()
 
-	// 根 span
-	ctx, rootSpan := tracer.Start(ctx, "GET /",
-		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			attribute.String("http.request.method", r.Method),
-			attribute.String("url.path", r.URL.Path),
-			attribute.String("client.address", r.RemoteAddr),
-		),
-	)
-	defer rootSpan.End()
+	start := time.Now() // 🆕 记录开始时间
 
-	// ✅ 日志①：全部改用 attribute.String / attribute.StringValue
-	emitLog(ctx, apilog.SeverityInfo, "received request",
+	// 🆕 活跃请求 +1
+	activeRequests.Add(ctx, 1)
+	defer activeRequests.Add(ctx, -1) // 🆕 请求结束 -1
+
+	emitLog(ctx, "received request",
 		attribute.String("http.method", r.Method),
 		attribute.String("http.target", r.URL.Path),
 		attribute.String("client.ip", r.RemoteAddr),
 	)
 
-	// 子 span
-	ctx, childSpan := tracer.Start(ctx, "handle-request")
-	defer childSpan.End()
+	span.SetAttributes(
+		attribute.String("http.method", r.Method),
+		attribute.String("http.target", r.URL.Path),
+	)
 
 	time.Sleep(200 * time.Millisecond)
 
-	// ✅ 日志②
-	emitLog(ctx, apilog.SeverityInfo, "request handled successfully",
+	duration := time.Since(start).Seconds() // 🆕 计算耗时
+
+	// 🆕 记录指标
+	attrs := metric.WithAttributes(
+		attribute.String("http.method", r.Method),
+		attribute.String("http.target", r.URL.Path),
+		attribute.Int("http.status_code", 200),
+	)
+	requestCounter.Add(ctx, 1, attrs)
+	requestDuration.Record(ctx, duration, attrs)
+
+	emitLog(ctx, "request handled successfully",
 		attribute.String("result", "ok"),
+		attribute.Float64("duration_seconds", duration), // 🆕 日志也带上耗时
 	)
 
-	rootSpan.SetAttributes(attribute.Int("http.response.status_code", http.StatusOK))
-	fmt.Fprintln(w, "Hello from go-k8s-demo! Tracing + Logging active.")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Hello from go-k8s-demo with full observability!\n"))
 }
 
-// emitLog 适配 v0.22.0：
-//   - Record.SetBody 接受 attribute.Value
-//   - Record.AddAttributes 接受 ...attribute.KeyValue
-func emitLog(ctx context.Context, sev apilog.Severity, body string, attrs ...attribute.KeyValue) {
-	var rec apilog.Record
-	rec.SetBody(attribute.StringValue(body)) // ✅ attribute.StringValue，不是 apilog.StringValue
-	rec.SetSeverity(sev)
-	rec.SetTimestamp(time.Now())
-	rec.AddAttributes(attrs...) // ✅ attribute.KeyValue，不是 apilog.KeyValue
-	otelLogger.Emit(ctx, rec)
+func main() {
+	ctx := context.Background()
+	shutdown := initOTel(ctx)
+	defer shutdown()
+
+	http.HandleFunc("/", handleRequest)
+
+	log.Println("Starting server on :8080 ...")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
 }
