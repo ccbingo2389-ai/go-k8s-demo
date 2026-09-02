@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -10,31 +11,30 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"       // logs
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp" // 🆕 metrics exporter
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"   // traces
-	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric" // 🆕 metrics SDK
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
-
-	otellog "go.opentelemetry.io/otel/log"
 )
 
 var (
 	tracer trace.Tracer
-	logger log.Logger
-	meter  = otel.Meter("go-k8s-demo") // 🆕 全局 meter（init 后会被替换）
+	logger otellog.Logger
+	meter  = otel.Meter("go-k8s-demo")
 )
 
-// 🆕 业务指标变量
+// 业务指标变量
 var (
-	requestCounter    metric.Int64Counter
-	requestDuration   metric.Float64Histogram
-	activeRequests    metric.Int64UpDownCounter
+	requestCounter  metric.Int64Counter
+	requestDuration metric.Float64Histogram
+	activeRequests  metric.Int64UpDownCounter
 )
 
 func initOTel(ctx context.Context) func() {
@@ -84,7 +84,7 @@ func initOTel(ctx context.Context) func() {
 	)
 	logger = lp.Logger("go-k8s-demo")
 
-	// ========== 🆕 Metrics ==========
+	// ========== Metrics ==========
 	metricExporter, err := otlpmetrichttp.New(ctx,
 		otlpmetrichttp.WithEndpointURL(endpoint),
 	)
@@ -94,14 +94,14 @@ func initOTel(ctx context.Context) func() {
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(
 			sdkmetric.NewPeriodicReader(metricExporter,
-				sdkmetric.WithInterval(10*time.Second), // 每 10 秒上报一次
+				sdkmetric.WithInterval(10*time.Second),
 			),
 		),
 		sdkmetric.WithResource(res),
 	)
 	otel.SetMeterProvider(mp)
 
-	// 🆕 注册业务指标
+	// 注册业务指标
 	initMetrics()
 
 	return func() {
@@ -109,15 +109,14 @@ func initOTel(ctx context.Context) func() {
 		defer cancel()
 		_ = tp.Shutdown(ctx)
 		_ = lp.Shutdown(ctx)
-		_ = mp.Shutdown(ctx) // 🆕 关闭 metrics provider
+		_ = mp.Shutdown(ctx)
 	}
 }
 
-// 🆕 初始化自定义指标
+// 初始化自定义指标
 func initMetrics() {
 	var err error
 
-	// 请求总数计数器
 	requestCounter, err = meter.Int64Counter("http_requests_total",
 		metric.WithDescription("Total number of HTTP requests"),
 		metric.WithUnit("{request}"),
@@ -126,7 +125,6 @@ func initMetrics() {
 		log.Fatalf("failed to create request counter: %v", err)
 	}
 
-	// 请求耗时直方图
 	requestDuration, err = meter.Float64Histogram("http_request_duration_seconds",
 		metric.WithDescription("HTTP request duration in seconds"),
 		metric.WithUnit("s"),
@@ -135,7 +133,6 @@ func initMetrics() {
 		log.Fatalf("failed to create request duration histogram: %v", err)
 	}
 
-	// 当前活跃请求数
 	activeRequests, err = meter.Int64UpDownCounter("http_active_requests",
 		metric.WithDescription("Number of active HTTP requests"),
 		metric.WithUnit("{request}"),
@@ -146,10 +143,8 @@ func initMetrics() {
 }
 
 func emitLog(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
-	// 双写 stdout
 	fmt.Printf("%s | %s\n", time.Now().Format("2006-01-02 15:04:05.000"), msg)
 
-	// 写入 OTel
 	r := otellog.Record{}
 	r.SetBody(otellog.StringValue(msg))
 	r.SetTimestamp(time.Now())
@@ -163,11 +158,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "handle-request")
 	defer span.End()
 
-	start := time.Now() // 🆕 记录开始时间
+	start := time.Now()
 
-	// 🆕 活跃请求 +1
 	activeRequests.Add(ctx, 1)
-	defer activeRequests.Add(ctx, -1) // 🆕 请求结束 -1
+	defer activeRequests.Add(ctx, -1)
 
 	emitLog(ctx, "received request",
 		attribute.String("http.method", r.Method),
@@ -182,9 +176,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	duration := time.Since(start).Seconds() // 🆕 计算耗时
+	duration := time.Since(start).Seconds()
 
-	// 🆕 记录指标
 	attrs := metric.WithAttributes(
 		attribute.String("http.method", r.Method),
 		attribute.String("http.target", r.URL.Path),
@@ -195,7 +188,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	emitLog(ctx, "request handled successfully",
 		attribute.String("result", "ok"),
-		attribute.Float64("duration_seconds", duration), // 🆕 日志也带上耗时
+		attribute.Float64("duration_seconds", duration),
 	)
 
 	w.WriteHeader(http.StatusOK)
