@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026090904
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -100,8 +100,7 @@ spec:
   gateways:
     - go-k8s-demo-gateway
   hosts:
-    - go-k8s-demo-svc
-    - go-k8s-demo-canary
+    - "*"
   http:
     - name: primary
       route:
