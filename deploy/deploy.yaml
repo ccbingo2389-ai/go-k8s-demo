@@ -50,10 +50,8 @@ spec:
             periodSeconds: 15
   strategy:
     canary:
-      # ✅ 【修复点 1】必须显式指定 canaryService，Rollouts 不会自动创建 Service 资源
       canaryService: go-k8s-demo-canary
       stableService: go-k8s-demo-svc
-      
       trafficRouting:
         istio:
           virtualServices:
@@ -71,7 +69,27 @@ spec:
 
 ---
 # ============================================================
-# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
+# 3. Istio Gateway（外部流量入口）
+# ============================================================
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: go-k8s-demo-gateway
+  namespace: go-k8s-demo
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
+
+---
+# ============================================================
+# 4. Istio VirtualService（绑定 Gateway，Argo Rollouts 动态调整权重）
 # ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -79,9 +97,10 @@ metadata:
   name: go-k8s-demo-vsvc
   namespace: go-k8s-demo
 spec:
+  gateways:
+    - go-k8s-demo-gateway
   hosts:
-    - go-k8s-demo-svc
-    - go-k8s-demo-canary       
+    - "*"
   http:
     - name: primary
       route:
@@ -91,14 +110,14 @@ spec:
               number: 80
           weight: 100
         - destination:
-            host: go-k8s-demo-canary   
+            host: go-k8s-demo-canary
             port:
               number: 80
           weight: 0
 
 ---
 # ============================================================
-# 4. Stable Service (根服务/稳定版)
+# 5. Stable Service (根服务/稳定版)
 # ============================================================
 apiVersion: v1
 kind: Service
@@ -119,10 +138,8 @@ spec:
 
 ---
 # ============================================================
-# 5. Canary Service (✅ 【修复点 2】必须手动创建此 Service)
+# 6. Canary Service
 # ============================================================
-# 注意：虽然 selector 和 stable service 一样，但 Argo Rollouts 控制器
-# 会自动修改这个 Service 的 Endpoints，使其只指向带有特定 hash 的 Canary Pods。
 apiVersion: v1
 kind: Service
 metadata:
@@ -138,5 +155,4 @@ spec:
       protocol: TCP
       port: 80
       targetPort: 8080
-  # Canary Service 通常不需要 NodePort，除非你要直接调试它
-  type: ClusterIP 
+  type: ClusterIP
