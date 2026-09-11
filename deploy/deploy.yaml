@@ -1,10 +1,19 @@
+# ============================================================
+# 1. 命名空间（含 Istio Sidecar 自动注入标签）
+# ============================================================
 apiVersion: v1
 kind: Namespace
 metadata:
   name: go-k8s-demo
+  labels:
+    istio-injection: enabled
+
 ---
-apiVersion: apps/v1
-kind: Deployment
+# ============================================================
+# 2. Argo Rollouts - Canary 灰度发布（集成 Istio）
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: go-k8s-demo
   namespace: go-k8s-demo
@@ -12,6 +21,7 @@ metadata:
     app: go-k8s-demo
 spec:
   replicas: 2
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: go-k8s-demo
@@ -19,38 +29,100 @@ spec:
     metadata:
       labels:
         app: go-k8s-demo
+        sidecar.istio.io/inject: "true"
     spec:
       containers:
         - name: go-app
-          # 此处的镜像地址请根据实际情况替换，云效流水线会自动处理 ${IMAGE}
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026090904
-          env:
-            # 指向集群内的 SigNoz OTel Collector
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
-            # 在 SigNoz UI 中显示的服务名称
-            - name: OTEL_SERVICE_NAME
-              value: "go-k8s-demo"
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+  strategy:
+    canary:
+      # ✅ 只保留 stableService；canaryService 由 Rollouts 自动创建
+      # 自动创建的 Service 名称为: go-k8s-demo-canary
+      # 其 selector 包含 rollouts-pod-template-hash，只匹配 canary pods
+      stableService: go-k8s-demo-svc
+      trafficRouting:
+        istio:
+          virtualServices:
+            - name: go-k8s-demo-vsvc
+              routes:
+                - primary
+      steps:
+        - setWeight: 10
+        - pause: { duration: 2m }
+        - setWeight: 30
+        - pause: { duration: 2m }
+        - setWeight: 60
+        - pause: { duration: 2m }
+        - setWeight: 100
+
 ---
+# ============================================================
+# 3. Istio VirtualService（Argo Rollouts 动态调整权重）
+# ============================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: go-k8s-demo-vsvc
+  namespace: go-k8s-demo
+spec:
+  hosts:
+    - go-k8s-demo-svc
+    - go-k8s-demo-canary       # ✅ 改为 Rollouts 自动创建的 canary service 名称
+  http:
+    - name: primary
+      route:
+        - destination:
+            host: go-k8s-demo-svc
+            port:
+              number: 80
+          weight: 100
+        - destination:
+            host: go-k8s-demo-canary   # ✅ 同步更新
+            port:
+              number: 80
+          weight: 0
+
+---
+# ============================================================
+# 4. Stable Service（端口已命名，selector 不变）
+# ============================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: go-k8s-demo-svc
   namespace: go-k8s-demo
+  labels:
+    app: go-k8s-demo
 spec:
-  type: NodePort
-  ports:
-    - port: 80
-      targetPort: 8080
-      nodePort: 30881  # 使用 30881 避免与 hotrod 的 30880 冲突
   selector:
     app: go-k8s-demo
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+      nodePort: 30881
+  type: NodePort
+
+# ❌ 已删除：手动创建的 go-k8s-demo-canary-svc
+# Rollouts Controller 会自动创建 go-k8s-demo-canary，
+# 并设置正确的 selector（含 rollouts-pod-template-hash）只匹配 canary pods
+
+# ============================================================
+# 注意：Gateway 和 Ingress 未包含在此文件中，
+# 如需要请从上一版配置中补充。
+# ============================================================
