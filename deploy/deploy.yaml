@@ -106,7 +106,7 @@ spec:
     - go-k8s-demo-svc
     - go-k8s-demo-canary
   gateways:                      # ✅ 新增：绑定到 Gateway
-    - go-k8s-demo-gateway        # 同命名空间下直接用名称即可
+    - istio-system/go-k8s-demo-gateway        # 同命名空间下直接用名称即可
   http:
     - name: primary              # ⚠️ 此名称必须与 Rollout 中 routes 指定的一致
       route:
