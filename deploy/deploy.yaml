@@ -100,7 +100,8 @@ spec:
   gateways:
     - go-k8s-demo-gateway
   hosts:
-    - "*"
+    - go-k8s-demo-svc
+    - go-k8s-demo-canary
   http:
     - name: primary
       route:
