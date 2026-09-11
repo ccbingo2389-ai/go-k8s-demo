@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026090904
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -50,10 +50,10 @@ spec:
             periodSeconds: 15
   strategy:
     canary:
-      # ✅ 只保留 stableService；canaryService 由 Rollouts 自动创建
-      # 自动创建的 Service 名称为: go-k8s-demo-canary
-      # 其 selector 包含 rollouts-pod-template-hash，只匹配 canary pods
+      # ✅ 【修复点 1】必须显式指定 canaryService，Rollouts 不会自动创建 Service 资源
+      canaryService: go-k8s-demo-canary
       stableService: go-k8s-demo-svc
+      
       trafficRouting:
         istio:
           virtualServices:
@@ -81,7 +81,7 @@ metadata:
 spec:
   hosts:
     - go-k8s-demo-svc
-    - go-k8s-demo-canary       # ✅ 改为 Rollouts 自动创建的 canary service 名称
+    - go-k8s-demo-canary       
   http:
     - name: primary
       route:
@@ -91,14 +91,14 @@ spec:
               number: 80
           weight: 100
         - destination:
-            host: go-k8s-demo-canary   # ✅ 同步更新
+            host: go-k8s-demo-canary   
             port:
               number: 80
           weight: 0
 
 ---
 # ============================================================
-# 4. Stable Service（端口已命名，selector 不变）
+# 4. Stable Service (根服务/稳定版)
 # ============================================================
 apiVersion: v1
 kind: Service
@@ -118,11 +118,26 @@ spec:
       nodePort: 30881
   type: NodePort
 
-# ❌ 已删除：手动创建的 go-k8s-demo-canary-svc
-# Rollouts Controller 会自动创建 go-k8s-demo-canary，
-# 并设置正确的 selector（含 rollouts-pod-template-hash）只匹配 canary pods
-
+---
 # ============================================================
-# 注意：Gateway 和 Ingress 未包含在此文件中，
-# 如需要请从上一版配置中补充。
+# 5. Canary Service (✅ 【修复点 2】必须手动创建此 Service)
 # ============================================================
+# 注意：虽然 selector 和 stable service 一样，但 Argo Rollouts 控制器
+# 会自动修改这个 Service 的 Endpoints，使其只指向带有特定 hash 的 Canary Pods。
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-k8s-demo-canary
+  namespace: go-k8s-demo
+  labels:
+    app: go-k8s-demo
+spec:
+  selector:
+    app: go-k8s-demo
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+  # Canary Service 通常不需要 NodePort，除非你要直接调试它
+  type: ClusterIP 
