@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: go-app
-          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026061208
+          image: crpi-qog7f6f2a152sq41.cn-shanghai.personal.cr.aliyuncs.com/test20260603/golang:2026090904
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -52,6 +52,7 @@ spec:
     canary:
       canaryService: go-k8s-demo-canary
       stableService: go-k8s-demo-svc
+
       trafficRouting:
         istio:
           virtualServices:
@@ -69,8 +70,11 @@ spec:
 
 ---
 # ============================================================
-# 3. Istio Gateway（外部流量入口）
+# 3. Istio Gateway（✅ 新增：入口网关）
 # ============================================================
+# ⚠️ 注意：port.number 必须是 8080，与 istio-ingressgateway Pod
+# 容器实际监听的端口一致（可通过 istioctl proxy-config listeners 确认）。
+# 对外访问端口由 istio-ingressgateway Service 的 NodePort 决定（如 30599 -> 8080）。
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
@@ -78,18 +82,19 @@ metadata:
   namespace: go-k8s-demo
 spec:
   selector:
-    istio: ingressgateway
+    istio: ingressgateway        # 匹配 istio-ingressgateway Pod 的标签
   servers:
     - port:
-        number: 80
+        number: 8080             # ✅ 必须与 Ingress Gateway Pod 监听端口一致
         name: http
         protocol: HTTP
       hosts:
-        - "*"
+        - go-k8s-demo-svc
+        - go-k8s-demo-canary
 
 ---
 # ============================================================
-# 4. Istio VirtualService（绑定 Gateway，Argo Rollouts 动态调整权重）
+# 4. Istio VirtualService（Argo Rollouts 动态调整权重）
 # ============================================================
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -97,12 +102,13 @@ metadata:
   name: go-k8s-demo-vsvc
   namespace: go-k8s-demo
 spec:
-  gateways:
-    - go-k8s-demo-gateway
   hosts:
-    - "*"
+    - go-k8s-demo-svc
+    - go-k8s-demo-canary
+  gateways:                      # ✅ 新增：绑定到 Gateway
+    - go-k8s-demo-gateway        # 同命名空间下直接用名称即可
   http:
-    - name: primary
+    - name: primary              # ⚠️ 此名称必须与 Rollout 中 routes 指定的一致
       route:
         - destination:
             host: go-k8s-demo-svc
@@ -140,6 +146,8 @@ spec:
 # ============================================================
 # 6. Canary Service
 # ============================================================
+# Argo Rollouts 控制器会自动修改这个 Service 的 Endpoints，
+# 使其只指向带有特定 hash 的 Canary Pods。
 apiVersion: v1
 kind: Service
 metadata:
