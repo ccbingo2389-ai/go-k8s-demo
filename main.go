@@ -229,7 +229,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	)
 
 	rootSpan.SetAttributes(attribute.Int("http.response.status_code", http.StatusOK))
-	fmt.Fprintln(w, "Hello from go-k8s-demo! Tracing + Logging + Metrics active.202609181547")
+	fmt.Fprintln(w, "Hello from go-k8s-demo! Tracing + Logging + Metrics active.202609181654")
 }
 
 func emitLog(ctx context.Context, sev apilog.Severity, body string, attrs ...attribute.KeyValue) {
